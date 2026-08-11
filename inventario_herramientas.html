@@ -1264,13 +1264,29 @@ async function liveOcrTick(which){
 }
 
 // recorta solo el recuadro guía del video (más rápido y preciso que la imagen completa)
+// Calcula qué porción del video nativo (en píxeles reales) es la que realmente
+// se ve dentro del recuadro en pantalla, considerando que el video usa object-fit:cover
+// (que recorta los bordes para llenar el marco). Sin esto, el recuadro guía visual
+// no coincide con lo que realmente se captura para el OCR.
+function computeVisibleVideoRect(video, box){
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const bw = box.clientWidth, bh = box.clientHeight;
+  const videoRatio = vw/vh, boxRatio = bw/bh;
+  let visW, visH, visX, visY;
+  if(videoRatio > boxRatio){
+    visH = vh; visW = vh*boxRatio; visX = (vw-visW)/2; visY = 0;
+  }else{
+    visW = vw; visH = vw/boxRatio; visX = 0; visY = (vh-visH)/2;
+  }
+  return {visX, visY, visW, visH};
+}
+
 function recognizeDigitsFromVideoCrop(which, videoEl){
-  const box = document.getElementById(which==='in'?'digitFrameIn':'digitFrameOut');
   const camBox = document.getElementById(which==='in'?'camBoxIn':'camBoxOut');
-  const bw = camBox.clientWidth, bh = camBox.clientHeight;
-  // proporciones del recuadro CSS (left/right 22%, top/bottom 38%)
-  const vx = videoEl.videoWidth, vy = videoEl.videoHeight;
-  const cropX = vx*0.22, cropY = vy*0.38, cropW = vx*0.56, cropH = vy*0.24;
+  const {visX, visY, visW, visH} = computeVisibleVideoRect(videoEl, camBox);
+  // el recuadro guía CSS deja 22% de margen izq/der y 38% arriba/abajo (ver .digitFrame)
+  const cropX = visX + visW*0.22, cropY = visY + visH*0.38;
+  const cropW = visW*0.56, cropH = visH*0.24;
   const canvas = document.createElement('canvas');
   canvas.width = cropW*2; canvas.height = cropH*2; // agranda para mejorar OCR
   const ctx = canvas.getContext('2d');
