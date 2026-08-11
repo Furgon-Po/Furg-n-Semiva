@@ -1211,14 +1211,11 @@ function stopCamera(which){
 async function getWorker(which){
   if(workers[which]) return workers[which];
   try{
-    // Fijamos las 3 rutas que Tesseract necesita descargar al mismo CDN (cdnjs)
-    // que ya sabemos que carga bien en este navegador — por defecto usa otros
-    // CDNs (jsdelivr/unpkg) que pueden estar bloqueados en algunas redes/operadores.
-    const w = await Tesseract.createWorker('eng', 1, {
-      workerPath: 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.1/worker.min.js',
-      corePath: 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js-core/4.0.4/tesseract-core.wasm.js',
-      langPath: 'https://tessdata.projectnaptha.com/4.0.0',
-    });
+    // Sin rutas manuales: dejamos que Tesseract.js use sus rutas oficiales por
+    // defecto (jsDelivr), que vienen correctamente emparejadas por versión.
+    // (Antes le fijamos una ruta a mano en cdnjs que en realidad no existe ahí
+    // para tesseract.js-core — por eso cargaba un motor "vacío"/null.)
+    const w = await Tesseract.createWorker('eng');
     await w.setParameters({
       tessedit_char_whitelist:'0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
       tessedit_pageseg_mode:'6' // bloque de texto (varias líneas: DMZ CHILE / BHP / 1668)
