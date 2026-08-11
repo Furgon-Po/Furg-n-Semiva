@@ -1163,12 +1163,14 @@ function wireFileInput(which){
     const reader = new FileReader();
     reader.onload = (ev)=>{
       showCapturedImage(which, ev.target.result);
-      recognizeDigitsFromSrc(which, ev.target.result).then(digits=>{
-        if(digits && digits.length===4){
-          setPin(which, digits);
-          showToast('Leído: '+digits+' — revisa y confirma');
+      recognizeDigitsFromSrc(which, ev.target.result).then(result=>{
+        if(result.digits){
+          setPin(which, result.digits);
+          showToast('Leído: '+result.digits+' — revisa y confirma');
+        }else if(result.error){
+          showToast('Error del motor OCR. Corrígelo a mano.', true);
         }else{
-          showToast('No se pudieron leer 4 dígitos claros. Corrígelos a mano.', true);
+          showToast('Leyó "'+(result.raw||'nada')+'" — no son 4 dígitos claros. Corrígelo a mano.', true);
         }
       });
     };
@@ -1202,13 +1204,19 @@ function stopCamera(which){
 
 async function getWorker(which){
   if(workers[which]) return workers[which];
-  const w = await Tesseract.createWorker('eng');
-  await w.setParameters({
-    tessedit_char_whitelist:'0123456789',
-    tessedit_pageseg_mode:'7' // línea/palabra única
-  });
-  workers[which] = w;
-  return w;
+  try{
+    const w = await Tesseract.createWorker('eng');
+    await w.setParameters({
+      tessedit_char_whitelist:'0123456789',
+      tessedit_pageseg_mode:'7' // línea/palabra única
+    });
+    workers[which] = w;
+    return w;
+  }catch(e){
+    console.error('No se pudo cargar el motor OCR', e);
+    showToast('No se pudo cargar el motor de lectura (revisa tu conexión a internet). Usa el teclado manual.', true);
+    throw e;
+  }
 }
 
 async function startCamera(which){
@@ -1246,9 +1254,19 @@ async function startCamera(which){
 
 async function liveOcrTick(which){
   const videoEl = document.getElementById(which==='in' ? 'video' : 'video2');
+  const rawEl = document.getElementById(which==='in'?'ocrRawIn':'ocrRawOut');
   if(!streams[which] || videoEl.readyState < videoEl.HAVE_ENOUGH_DATA) return;
-  const digits = await recognizeDigitsFromVideoCrop(which, videoEl);
-  if(!digits || digits.length!==4){ return; }
+  const result = await recognizeDigitsFromVideoCrop(which, videoEl);
+  if(result.error){
+    rawEl.textContent = '⚠️ Error leyendo el frame — reintentando...';
+    return;
+  }
+  const { digits, raw } = result;
+  if(!digits){
+    // muestra igual lo que alcanzó a leer, así ves si está detectando algo o nada
+    rawEl.textContent = raw ? `Leyendo... "${raw}" (no son 4 dígitos claros, ajusta encuadre/distancia)` : 'Leyendo... (sin texto detectado, acerca o aleja un poco)';
+    return;
+  }
   setPin(which, digits);
   if(digits===lastStablePin[which]){
     stableCount[which]++;
@@ -1256,7 +1274,7 @@ async function liveOcrTick(which){
     lastStablePin[which]=digits;
     stableCount[which]=1;
   }
-  document.getElementById(which==='in'?'ocrRawIn':'ocrRawOut').textContent = 'Leyendo... '+digits+(stableCount[which]>1?' (confirmando)':'');
+  rawEl.textContent = 'Leyendo... '+digits+(stableCount[which]>1?' (confirmando)':'');
   if(stableCount[which] >= STABLE_READS_NEEDED){
     stableCount[which] = 0;
     searchPin(which);
@@ -1307,12 +1325,33 @@ async function recognizeDigitsFromSrc(which, src){
 }
 
 // escala de grises + contraste simple para ayudar a leer el grabado
+// Umbral automático (método de Otsu): en vez de un número fijo que solo sirve
+// con cierta luz, calcula el mejor punto de corte blanco/negro según el histograma
+// real de cada foto — mucho más robusto con luz cambiante dentro del furgón.
 function preprocessCanvas(ctx, w, h){
   const imgData = ctx.getImageData(0,0,w,h);
   const d = imgData.data;
-  for(let i=0;i<d.length;i+=4){
-    const gray = 0.34*d[i] + 0.5*d[i+1] + 0.16*d[i+2];
-    const v = gray < 130 ? 0 : 255; // umbral simple
+  const n = w*h;
+  const gray = new Uint8ClampedArray(n);
+  const hist = new Array(256).fill(0);
+  for(let i=0, p=0; i<d.length; i+=4, p++){
+    const g = 0.34*d[i] + 0.5*d[i+1] + 0.16*d[i+2];
+    gray[p] = g;
+    hist[g|0]++;
+  }
+  // Otsu: busca el umbral que maximiza la varianza entre las dos clases (claro/oscuro)
+  let sum=0; for(let t=0;t<256;t++) sum += t*hist[t];
+  let sumB=0, wB=0, wF=0, maxVar=0, threshold=128;
+  for(let t=0;t<256;t++){
+    wB += hist[t]; if(wB===0) continue;
+    wF = n - wB; if(wF===0) break;
+    sumB += t*hist[t];
+    const mB = sumB/wB, mF = (sum-sumB)/wF;
+    const varBetween = wB*wF*(mB-mF)*(mB-mF);
+    if(varBetween > maxVar){ maxVar = varBetween; threshold = t; }
+  }
+  for(let p=0, i=0; p<n; p++, i+=4){
+    const v = gray[p] < threshold ? 0 : 255;
     d[i]=d[i+1]=d[i+2]=v;
   }
   ctx.putImageData(imgData,0,0);
@@ -1322,11 +1361,12 @@ async function runDigitOCR(which, canvas){
   try{
     const w = await getWorker(which);
     const { data:{ text } } = await w.recognize(canvas);
+    const cleaned = (text||'').trim().replace(/\s+/g,'');
     const digits = (text.match(/\d/g)||[]).join('').slice(0,4);
-    return digits.length===4 ? digits : null;
+    return { digits: digits.length===4 ? digits : null, raw: cleaned };
   }catch(e){
     console.error(e);
-    return null;
+    return { digits:null, raw:null, error:true };
   }
 }
 
