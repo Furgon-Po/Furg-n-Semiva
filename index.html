@@ -452,7 +452,7 @@
 <body>
 <header>
   <h1>🔧 Inventario de Herramientas — Entregas PP</h1>
-  <p>Datos leídos de 12 hojas "Entrega de Herramientas y Equipos PP".</p>
+  <p id="headerSubtitle">Datos leídos de 12 hojas "Entrega de Herramientas y Equipos PP".</p>
   <div class="tabs">
     <button class="tabBtn active" data-tab="inv" onclick="switchTab('inv')">📋 Inventario</button>
     <button class="tabBtn" data-tab="in" onclick="switchTab('in')">📥 Entrada</button>
@@ -1065,6 +1065,10 @@ function switchTab(tab){
   document.getElementById('invSearchWrap').style.display = tab==='inv' ? 'flex':'none';
   document.getElementById('viewIn').classList.toggle('active', tab==='in');
   document.getElementById('viewOut').classList.toggle('active', tab==='out');
+  // en las pestañas de escaneo, ocultamos el texto/estadísticas del encabezado
+  // para dejarle más espacio en pantalla a la cámara
+  document.getElementById('headerSubtitle').style.display = tab==='inv' ? 'block':'none';
+  document.getElementById('stats').style.display = tab==='inv' ? 'flex':'none';
   // apagar cámaras al salir de sus pestañas
   if(tab!=='in') stopCamera('in');
   if(tab!=='out') stopCamera('out');
@@ -1244,14 +1248,23 @@ async function startCamera(which){
     frame.style.display='block';
     liveBtn.textContent='⏹️ Detener cámara';
     showToast('Cámara activa — acerca el precinto al recuadro');
-    await getWorker(which); // precalienta el motor OCR
-    camTimers[which] = setInterval(()=>liveOcrTick(which), OCR_INTERVAL_MS);
   }catch(e){
     let msg = 'Cámara en vivo no disponible aquí.';
     if(e && e.name==='NotAllowedError') msg = 'Permiso de cámara denegado. Revísalo en ajustes del navegador.';
+    else if(e && e.name==='NotReadableError') msg = 'La cámara está siendo usada por otra app/pestaña. Ciérrala e intenta de nuevo.';
+    else if(e && e.name) msg = 'Error de cámara: '+e.name+(e.message?' — '+e.message:'');
     else if(location.protocol==='file:') msg = 'Este archivo se abrió como archivo local (file://) y el navegador bloquea la cámara ahí. Ábrelo en Chrome desde una URL http(s), no como archivo descargado.';
     showToast(msg + ' Usa el teclado o "Tomar foto".', true);
+    return; // la cámara en sí no abrió, no seguir
   }
+  // El motor OCR se carga aparte: si falla aquí, la cámara sigue activa igual
+  // (cada lectura reintenta cargarlo sola dentro de runDigitOCR).
+  try{
+    await getWorker(which);
+  }catch(e){
+    showToast('Cámara activa, pero el motor de lectura no cargó (revisa tu conexión). Reintentará solo, o usa "Tomar foto"/teclado.', true);
+  }
+  camTimers[which] = setInterval(()=>liveOcrTick(which), OCR_INTERVAL_MS);
 }
 
 async function liveOcrTick(which){
