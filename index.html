@@ -388,15 +388,15 @@
   }
   .digitFrame{
     position:absolute;
-    left:22%;right:22%;top:38%;bottom:38%;
+    left:12%;right:12%;top:18%;bottom:18%;
     border:3px solid var(--accent);
     border-radius:10px;
     box-shadow:0 0 0 2000px rgba(0,0,0,.45);
   }
   .digitFrame::after{
-    content:"encuadra solo los 4 dígitos aquí";
+    content:"gira la herramienta para que el texto quede horizontal (BHP/SMV + número)";
     position:absolute;
-    top:-22px;left:0;right:0;
+    top:-34px;left:0;right:0;
     text-align:center;
     color:#fff;
     font-size:.68rem;
@@ -476,7 +476,7 @@
     <input class="pinBox" maxlength="1" inputmode="numeric" pattern="[0-9]" data-idx="3">
   </div>
   <div class="camControls">
-    <button class="camBtn primary" onclick="clearPin('in');searchPin('in')">🔍 Buscar</button>
+    <button class="camBtn primary" onclick="searchPin('in')">🔍 Buscar</button>
     <button class="camBtn ghost" onclick="clearPin('in')">✕ Borrar</button>
   </div>
   <div class="camBox" id="camBoxIn">
@@ -1114,6 +1114,7 @@ let camTimers = {in:null, out:null};
 let workers = {in:null, out:null};
 let lastStablePin = {in:'', out:''};
 let stableCount = {in:0, out:0};
+let lastPrefix = {in:null, out:null};
 const OCR_INTERVAL_MS = 1200;
 const STABLE_READS_NEEDED = 2; // cuántas lecturas iguales seguidas para autoconfirmar
 
@@ -1166,11 +1167,12 @@ function wireFileInput(which){
       recognizeDigitsFromSrc(which, ev.target.result).then(result=>{
         if(result.digits){
           setPin(which, result.digits);
-          showToast('Leído: '+result.digits+' — revisa y confirma');
+          showToast('Leído: '+result.digits+(result.prefix?' ('+result.prefix+')':'')+' — buscando...');
+          searchPin(which, result.prefix);
         }else if(result.error){
           showToast('Error del motor OCR. Corrígelo a mano.', true);
         }else{
-          showToast('Leyó "'+(result.raw||'nada')+'" — no son 4 dígitos claros. Corrígelo a mano.', true);
+          showToast('Leyó "'+(result.raw||'nada')+'" — no son dígitos claros. Corrígelo a mano.', true);
         }
       });
     };
@@ -1207,8 +1209,8 @@ async function getWorker(which){
   try{
     const w = await Tesseract.createWorker('eng');
     await w.setParameters({
-      tessedit_char_whitelist:'0123456789',
-      tessedit_pageseg_mode:'7' // línea/palabra única
+      tessedit_char_whitelist:'0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+      tessedit_pageseg_mode:'6' // bloque de texto (varias líneas: DMZ CHILE / BHP / 1668)
     });
     workers[which] = w;
     return w;
@@ -1261,23 +1263,24 @@ async function liveOcrTick(which){
     rawEl.textContent = '⚠️ Error leyendo el frame — reintentando...';
     return;
   }
-  const { digits, raw } = result;
+  const { digits, raw, prefix } = result;
   if(!digits){
     // muestra igual lo que alcanzó a leer, así ves si está detectando algo o nada
-    rawEl.textContent = raw ? `Leyendo... "${raw}" (no son 4 dígitos claros, ajusta encuadre/distancia)` : 'Leyendo... (sin texto detectado, acerca o aleja un poco)';
+    rawEl.textContent = raw ? `Leyendo... "${raw}" (aún no hay 3-4 dígitos claros, ajusta encuadre/distancia)` : 'Leyendo... (sin texto detectado, acerca o aleja un poco)';
     return;
   }
   setPin(which, digits);
+  lastPrefix[which] = prefix;
   if(digits===lastStablePin[which]){
     stableCount[which]++;
   }else{
     lastStablePin[which]=digits;
     stableCount[which]=1;
   }
-  rawEl.textContent = 'Leyendo... '+digits+(stableCount[which]>1?' (confirmando)':'');
+  rawEl.textContent = 'Leyendo... '+digits+(prefix?' ('+prefix+')':'')+(stableCount[which]>1?' — confirmando':'');
   if(stableCount[which] >= STABLE_READS_NEEDED){
     stableCount[which] = 0;
-    searchPin(which);
+    searchPin(which, prefix);
   }
 }
 
@@ -1302,9 +1305,9 @@ function computeVisibleVideoRect(video, box){
 function recognizeDigitsFromVideoCrop(which, videoEl){
   const camBox = document.getElementById(which==='in'?'camBoxIn':'camBoxOut');
   const {visX, visY, visW, visH} = computeVisibleVideoRect(videoEl, camBox);
-  // el recuadro guía CSS deja 22% de margen izq/der y 38% arriba/abajo (ver .digitFrame)
-  const cropX = visX + visW*0.22, cropY = visY + visH*0.38;
-  const cropW = visW*0.56, cropH = visH*0.24;
+  // el recuadro guía CSS deja 12% de margen izq/der y 18% arriba/abajo (ver .digitFrame)
+  const cropX = visX + visW*0.12, cropY = visY + visH*0.18;
+  const cropW = visW*0.76, cropH = visH*0.64;
   const canvas = document.createElement('canvas');
   canvas.width = cropW*2; canvas.height = cropH*2; // agranda para mejorar OCR
   const ctx = canvas.getContext('2d');
@@ -1357,16 +1360,27 @@ function preprocessCanvas(ctx, w, h){
   ctx.putImageData(imgData,0,0);
 }
 
+// Prefijos conocidos que aparecen en las etiquetas (BHP = minera BHP, SMV = Centinela/Semiva, etc.)
+const KNOWN_PREFIXES = ['BHP','SMV','BNP','DMZ'];
+
 async function runDigitOCR(which, canvas){
   try{
     const w = await getWorker(which);
     const { data:{ text } } = await w.recognize(canvas);
-    const cleaned = (text||'').trim().replace(/\s+/g,'');
-    const digits = (text.match(/\d/g)||[]).join('').slice(0,4);
-    return { digits: digits.length===4 ? digits : null, raw: cleaned };
+    const upper = (text||'').toUpperCase();
+    const cleaned = upper.trim().replace(/\s+/g,' ');
+    // toma el último grupo de 3-4 dígitos del bloque (normalmente es el código, va al final de la etiqueta)
+    const digitGroups = upper.match(/\d{3,4}/g) || [];
+    const digits = digitGroups.length ? digitGroups[digitGroups.length-1] : null;
+    // detecta el prefijo (BHP/SMV/...) si aparece en el texto leído
+    let prefix = null;
+    for(const p of KNOWN_PREFIXES){
+      if(upper.includes(p) && p!=='DMZ'){ prefix = p; break; }
+    }
+    return { digits: digits && digits.length>=3 ? digits : null, prefix, raw: cleaned };
   }catch(e){
     console.error(e);
-    return { digits:null, raw:null, error:true };
+    return { digits:null, prefix:null, raw:null, error:true };
   }
 }
 
@@ -1379,7 +1393,7 @@ function digitsOnly(s){
   return (s||'').replace(/[^0-9]/g,'');
 }
 
-function findCandidates(raw){
+function findCandidates(raw, prefixHint){
   const q = norm(raw);
   const qDigits = digitsOnly(raw);
   const results = [];
@@ -1389,9 +1403,10 @@ function findCandidates(raw){
       const codeDigits = digitsOnly(c.v);
       if(!codeNorm) return;
       let score = 0;
-      if(qDigits && codeDigits && qDigits===codeDigits) score = 100; // match exacto de 4 dígitos
+      if(qDigits && codeDigits && qDigits===codeDigits) score = 100; // match exacto de dígitos
       else if(q && codeNorm===q) score = 100;
       else if(q && (codeNorm.includes(q) || q.includes(codeNorm))) score = 60;
+      if(score>0 && prefixHint && codeNorm.includes(prefixHint)) score += 20; // prioriza si coincide el prefijo (BHP/SMV/...)
       if(score>0) results.push({item, code:c, ci, score});
     });
   });
@@ -1399,30 +1414,29 @@ function findCandidates(raw){
   return results.slice(0,8);
 }
 
-function renderCandidates(which, raw, results){
+function renderCandidates(which, raw, results, prefixHint){
   const rawEl = document.getElementById(which==='in'?'ocrRawIn':'ocrRawOut');
   const listEl = document.getElementById(which==='in'?'candListIn':'candListOut');
-  rawEl.textContent = raw ? ('Buscando: "' + raw.trim() + '"') : '';
+  const prefixTxt = prefixHint ? ` (${prefixHint})` : '';
+  rawEl.textContent = raw ? ('Buscando: "' + raw.trim() + '"' + prefixTxt) : '';
   if(results.length===0){
-    listEl.innerHTML = '<div style="font-size:.8rem;color:#a49e8c;padding:6px 2px;">Sin coincidencias en el inventario para ese código.</div>';
+    listEl.innerHTML = `<div style="font-size:.85rem;color:#c0503f;font-weight:600;padding:8px 2px;">❌ Código no registrado${prefixTxt} — "${raw}" no está en el inventario. Puedes añadirlo manualmente desde la pestaña Inventario.</div>`;
     return;
   }
   listEl.innerHTML = results.map((r)=>`
     <div class="candCard ${which==='out'?'out':''}">
-      <div class="info"><b>${r.item.tool}</b><span>${r.code.v}${r.code.c?' · ya en stock':' · sin marcar'}</span></div>
+      <div class="info"><b>${r.item.tool}</b><span>${r.code.v}${r.code.c?' · ya en stock':' · sin marcar'} · ${r.item.hoja}</span></div>
       <button onclick="confirmScan('${which}', ${r.item.id}, ${r.ci})">${which==='in'?'✓ Entrada':'✕ Salida'}</button>
     </div>`).join('');
 }
 
-function searchPin(which){
+function searchPin(which, prefixHint){
   const pin = getPin(which);
   if(pin.length!==4){ showToast('Completa los 4 dígitos primero', true); return; }
-  const results = findCandidates(pin);
-  renderCandidates(which, pin, results);
-  if(results.length===1){
-    // coincidencia única y exacta: igual requiere el toque de confirmación del usuario (por seguridad)
-  }else if(results.length===0){
-    showToast('Ningún código del inventario termina en "'+pin+'"', true);
+  const results = findCandidates(pin, prefixHint);
+  renderCandidates(which, pin, results, prefixHint);
+  if(results.length===0){
+    showToast('❌ Código no registrado: "'+pin+'"'+(prefixHint?' ('+prefixHint+')':''), true);
   }
 }
 
